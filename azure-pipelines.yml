@@ -1,0 +1,90 @@
+trigger:
+  - development
+
+pool:
+  name: "Simulators"
+
+variables:
+  currentDate: $[format('{0:yyyy}.{0:MM}.{0:dd}T{0:HH}.{0:mm}.{0:ss}-test', pipeline.startTime)]
+  apiFolder: /var/www/weve-notificaciones/releases
+  prodFolder: /var/www/weve-notificaciones/current-test
+  restartService: sudo systemctl restart notifications-service.service
+  envFile: appsettings.json
+  envFolder: /etc/weve/envs/notification/web-api/test
+  buildPlatform: 'Any CPU'
+  buildConfiguration: 'Release'
+  solution: '**/Notification-Service.sln'
+  project: '**/Notification-Service.csproj'
+  zipFile: Notification-Service.zip
+
+steps:
+  - task: NuGetToolInstaller@1
+    displayName: 'NuGet tool installer'
+
+  - task: NuGetCommand@2
+    displayName: 'Restore NuGet packages'
+    inputs:
+      command: 'restore'
+      restoreSolution: '$(solution)'
+      feedsToUse: 'select'
+
+  - task: UseDotNet@2
+    displayName: 'Installing DotNet'
+    inputs:
+      packageType: 'sdk'
+      version: '6.x'
+
+  - task: DotNetCoreCLI@2
+    displayName: 'Publishing project'
+    inputs:
+      command: 'publish'
+      publishWebProjects: false
+      projects: '$(project)'
+      arguments: '--configuration $(buildConfiguration) --output $(Build.ArtifactStagingDirectory)/admin'
+      zipAfterPublish: true
+
+  - task: PublishBuildArtifacts@1
+    displayName: 'Publishing Artifact'
+    inputs:
+      PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+      ArtifactName: 'WeveNotificationArtifact'
+      publishLocation: 'Container'
+
+  - task: CopyFilesOverSSH@0
+    displayName: 'Copy project zip to Droplet'
+    inputs:
+      sshEndpoint: 'WeveTestDroplet'
+      sourceFolder: '$(Build.ArtifactStagingDirectory)/admin'
+      contents: '$(zipFile)'
+      targetFolder: '$(apiFolder)'
+
+  - task: SSH@0
+    displayName: 'Extract project on Droplet'
+    inputs:
+      sshEndpoint: 'WeveTestDroplet'
+      runOptions: 'inline'
+      inline: |
+        sudo apt-get update
+        sudo apt-get install -y unzip || sudo apt-get install -y zip unzip
+        cd $(apiFolder)
+        mkdir $(currentDate)
+        unzip $(zipFile) -d $(currentDate)
+
+  # - task: CopyFilesOverSSH@0
+  #   displayName: 'Copy envs to Droplet'
+  #   inputs:
+  #     sshEndpoint: 'WeveTestDroplet'
+  #     sourceFolder: '/etc/weve/envs/admin/web-api/test'
+  #     contents: '$(envFile)'
+  #     targetFolder: '$(apiFolder)/$(currentDate)'
+  #     overwrite: true
+
+  - task: SSH@0
+    displayName: 'Symlink and Restart Service'
+    inputs:
+      sshEndpoint: 'WeveTestDroplet'
+      runOptions: 'inline'
+      inline: |
+        rm -rf $(prodFolder)
+        ln -sfn $(apiFolder)/$(currentDate) $(prodFolder)
+        $(restartService)
